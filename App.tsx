@@ -1,152 +1,210 @@
+import React, { useEffect, useState } from 'react';
+import { StatusBar, View, ActivityIndicator } from 'react-native';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect, useState } from 'react';
-import { StatusBar, Text, TouchableOpacity, View } from 'react-native';
-import { Sonner } from './components/ui/sonner';
-import { Toaster } from './components/ui/toaster';
-import { TooltipProvider } from './components/ui/tooltip';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { socketService } from './src/services/socket';
+import NotificationService from './src/services/NotificationService';
 
-// Mobile Screens
-import LocationPermissionScreen from './components/screens/LocationPermissionScreen';
-import OnboardingOne from './components/screens/OnboardingOne';
-import OnboardingTwo from './components/screens/OnboardingTwo';
-import OTPScreen from './components/screens/OTPScreen';
-import RegistrationScreen from './components/screens/RegistrationScreen';
-import SplashScreen from './components/screens/SplashScreen';
-import WelcomeScreen from './components/screens/WelcomeScreen';
+// Chat App Screens
+import LoginScreen from './src/screens/LoginScreen';
+import RegisterScreen from './src/screens/RegisterScreen';
+import ChatListScreen from './src/screens/ChatListScreen';
+import ChatScreen from './src/screens/ChatScreen';
+import UsersScreen from './src/screens/UsersScreen';
+import AdminScreen from './src/screens/AdminScreen';
+import CreateGroupScreen from './src/screens/CreateGroupScreen';
+import FileShareScreen from './src/screens/FileShareScreen';
 
 const queryClient = new QueryClient();
 
 type Screen = 
-  | 'splash'
-  | 'onboarding1' 
-  | 'onboarding2'
-  | 'welcome'
+  | 'login'
   | 'register'
-  | 'otp'
-  | 'otp-error'
-  | 'location-permission'
-  | 'home';
+  | 'chatList'
+  | 'chat'
+  | 'users'
+  | 'admin'
+  | 'createGroup'
+  | 'fileShare';
 
-const App = () => {
-  const [currentScreen, setCurrentScreen] = useState<Screen>('splash');
-  const [userEmail, setUserEmail] = useState('sample@example.com');
+interface Chat {
+  id: string;
+  name: string;
+  type: 'personal' | 'group';
+  participants: string[];
+  isEncrypted: boolean;
+  settings: {
+    allowCopy: boolean;
+    allowShare: boolean;
+    allowDelete: boolean;
+    allowScreenshot: boolean;
+  };
+}
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  avatar?: string;
+  isOnline: boolean;
+  lastSeen: string;
+  isAdmin: boolean;
+}
+
+const ChatApp: React.FC = () => {
+  const [currentScreen, setCurrentScreen] = useState<Screen>('login');
+  const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const { user, loading } = useAuth();
 
   useEffect(() => {
-    // Auto-advance from splash screen
-    if (currentScreen === 'splash') {
-      const timer = setTimeout(() => {
-        setCurrentScreen('onboarding1');
-      }, 2000);
-      return () => clearTimeout(timer);
+    if (!loading && user) {
+      setCurrentScreen('chatList');
+      // Connect to socket when user is logged in
+      socketService.connect().catch(console.error);
+      
+      // Request notification permissions
+      NotificationService.requestPermissions();
+      
+      // Setup global notification listener
+      socketService.on('new_message', (data) => {
+        if (data.senderId !== user?.id) {
+          console.log('🔔 Global notification for new message');
+          NotificationService.sendLocalNotification(
+            `💬 New message from ${data.senderName}`,
+            data.content.length > 50 ? data.content.substring(0, 50) + '...' : data.content
+          );
+        }
+      });
+    } else if (!loading && !user) {
+      setCurrentScreen('login');
     }
-  }, [currentScreen]);
+  }, [user, loading]);
+
+  const handleChatSelect = (chat: Chat) => {
+    setSelectedChat(chat);
+    setCurrentScreen('chat');
+  };
+
+  const handleUserSelect = async (user: User) => {
+    try {
+      // Create or get personal chat with selected user
+      const response = await fetch('http://192.168.1.11:3000/api/chats/personal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await AsyncStorage.getItem('authToken')}`,
+        },
+        body: JSON.stringify({ userId: user.id }),
+      });
+
+      if (response.ok) {
+        const chat = await response.json();
+        setSelectedChat(chat);
+        setCurrentScreen('chat');
+      }
+    } catch (error) {
+      console.error('Error creating chat:', error);
+    }
+  };
 
   const renderScreen = () => {
+    if (loading) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#667eea' }}>
+          <ActivityIndicator size="large" color="white" />
+        </View>
+      );
+    }
+
     switch (currentScreen) {
-      case 'splash':
-        return <SplashScreen />;
-      
-      case 'onboarding1':
+      case 'login':
         return (
-          <OnboardingOne onNext={() => setCurrentScreen('onboarding2')} />
-        );
-      
-      case 'onboarding2':
-        return (
-          <OnboardingTwo onNext={() => setCurrentScreen('welcome')} />
-        );
-      
-      case 'welcome':
-        return (
-          <WelcomeScreen
-            onSignIn={() => setCurrentScreen('welcome')} // You can implement sign in flow
-            onCreateAccount={() => setCurrentScreen('register')}
-          />
+          <LoginScreen onNavigateToRegister={() => setCurrentScreen('register')} />
         );
       
       case 'register':
         return (
-          <RegistrationScreen
-            onBack={() => setCurrentScreen('welcome')}
-            onSignUp={(data) => {
-              setUserEmail(data.email);
-              setCurrentScreen('otp');
+          <RegisterScreen onNavigateToLogin={() => setCurrentScreen('login')} />
+        );
+      
+      case 'chatList':
+        return (
+          <ChatListScreen
+            onChatSelect={handleChatSelect}
+            onNavigateToUsers={() => setCurrentScreen('users')}
+            onNavigateToAdmin={() => setCurrentScreen('admin')}
+            onNavigateToCreateGroup={() => setCurrentScreen('createGroup')}
+          />
+        );
+      
+      case 'chat':
+        return selectedChat ? (
+          <ChatScreen
+            chat={selectedChat}
+            onBack={() => setCurrentScreen('chatList')}
+            onNavigateToFileShare={() => setCurrentScreen('fileShare')}
+          />
+        ) : null;
+      
+      case 'users':
+        return (
+          <UsersScreen
+            onUserSelect={handleUserSelect}
+            onBack={() => setCurrentScreen('chatList')}
+          />
+        );
+      
+      case 'admin':
+        return (
+          <AdminScreen onBack={() => setCurrentScreen('chatList')} />
+        );
+      
+      case 'createGroup':
+        return (
+          <CreateGroupScreen
+            onGroupCreated={(group) => {
+              setSelectedChat(group);
+              setCurrentScreen('chat');
             }}
+            onBack={() => setCurrentScreen('chatList')}
           />
         );
       
-      case 'otp':
-        return (
-          <OTPScreen
-            onBack={() => setCurrentScreen('register')}
-            onVerify={(code) => {
-              // Simulate wrong code for demo
-              if (code === '1234') {
-                setCurrentScreen('location-permission');
-              } else {
-                setCurrentScreen('otp-error');
-              }
+      case 'fileShare':
+        return selectedChat ? (
+          <FileShareScreen
+            chatId={selectedChat.id}
+            onFileSent={(file) => {
+              // Handle file sent
+              setCurrentScreen('chat');
             }}
-            email={userEmail}
+            onBack={() => setCurrentScreen('chat')}
           />
-        );
-      
-      case 'otp-error':
-        return (
-          <OTPScreen
-            onBack={() => setCurrentScreen('register')}
-            onVerify={(code) => {
-              if (code === '7828') {
-                setCurrentScreen('location-permission');
-              }
-            }}
-            email={userEmail}
-            hasError={true}
-          />
-        );
-      
-      case 'location-permission':
-        return (
-          <LocationPermissionScreen
-            onContinue={() => setCurrentScreen('home')}
-          />
-        );
-      
-      case 'home':
-        return (
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F95233' }}>
-            <View style={{ alignItems: 'center' }}>
-              <Text style={{ fontSize: 24, fontWeight: 'bold', marginBottom: 16, color: 'white', textAlign: 'center' }}>
-                Welcome to Shawarma Stop! 🌯
-              </Text>
-              <Text style={{ fontSize: 16, color: 'white', textAlign: 'center', marginBottom: 32 }}>
-                Your delicious journey begins here!
-              </Text>
-              <TouchableOpacity 
-                onPress={() => setCurrentScreen('splash')}
-                style={{ paddingHorizontal: 24, paddingVertical: 12, backgroundColor: 'white', borderRadius: 12 }}
-              >
-                <Text style={{ color: '#F95233', fontSize: 16, fontWeight: '500' }}>
-                  Restart Demo
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        );
+        ) : null;
       
       default:
-        return <SplashScreen />;
+        return (
+          <LoginScreen onNavigateToRegister={() => setCurrentScreen('register')} />
+        );
     }
   };
 
   return (
+    <>
+      <StatusBar barStyle="light-content" backgroundColor="#667eea" />
+      {renderScreen()}
+    </>
+  );
+};
+
+const App = () => {
+  return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-        {renderScreen()}
-        <Toaster toasts={[]} onRemove={() => {}} />
-        <Sonner toasts={[]} onRemove={() => {}} />
-      </TooltipProvider>
+      <AuthProvider>
+        <ChatApp />
+      </AuthProvider>
     </QueryClientProvider>
   );
 };
